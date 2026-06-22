@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.14] - 2026-06-22
+
+### Changed
+- Switched CLI command syntax to command-first form:
+  `ssh-key-sync <start|sync|status|stop> [options]`.
+- Moved sync-related options under `start` and `sync` subcommands.
+- Made `--sid` optional for `status` and `stop`:
+  SID is resolved from `SSH_KEY_SYNC_SID` or current runtime marker.
+- Updated `status` and `stop` behavior to operate on the resolved current SID by default.
+- Updated `README.md` and `docs/man.md` examples and command descriptions for the new CLI shape.
+
 ## [0.1.13] - 2026-06-22
 
 ### Added

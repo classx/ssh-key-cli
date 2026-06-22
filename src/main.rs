@@ -15,7 +15,7 @@ mod ssh_keys;
 #[allow(dead_code)]
 mod transport;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use config::{ConfigInput, ConfigMode, load_config};
 use std::process::{Command as ProcessCommand, Stdio};
 
@@ -23,6 +23,12 @@ use std::process::{Command as ProcessCommand, Stdio};
 #[command(name = "ssh-key-sync")]
 #[command(about = "SSH key synchronization daemon CLI")]
 struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Args, Debug)]
+struct SyncConfigArgs {
     /// Synchronization group identifier.
     #[arg(long)]
     sid: Option<String>,
@@ -66,45 +72,70 @@ struct Cli {
     /// Optional KEY=VALUE config file path.
     #[arg(long)]
     config_path: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct StartArgs {
+    #[command(flatten)]
+    config: SyncConfigArgs,
 
     /// Keep `start` in foreground (do not daemonize to background).
     #[arg(long, default_value_t = false)]
     foreground: bool,
-
-    #[command(subcommand)]
-    command: Command,
 }
 
-#[derive(Subcommand, Debug, Clone, Copy)]
+#[derive(Args, Debug)]
+struct SyncArgs {
+    #[command(flatten)]
+    config: SyncConfigArgs,
+}
+
+#[derive(Args, Debug)]
+struct ControlArgs {
+    /// Synchronization group identifier. If omitted, use current daemon SID.
+    #[arg(long)]
+    sid: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
 enum Command {
-    Start,
-    Stop,
-    Status,
-    Sync,
+    Start(StartArgs),
+    Stop(ControlArgs),
+    Status(ControlArgs),
+    Sync(SyncArgs),
 }
 
 fn main() {
     let cli = Cli::parse();
-    if matches!(cli.command, Command::Stop | Command::Status) {
-        let sid = resolve_sid(&cli);
-        let sid = match sid {
-            Some(value) => value,
-            None => {
-                eprintln!("Missing SID: set --sid or SSH_KEY_SYNC_SID");
-                std::process::exit(2);
-            }
-        };
-
-        match cli.command {
-            Command::Stop => match runtime::stop_daemon(&sid) {
+    match cli.command {
+        Command::Stop(args) => {
+            let sid = resolve_control_sid(args.sid.as_deref());
+            let sid = match sid {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+            };
+            match runtime::stop_daemon(&sid) {
                 Ok(true) => println!("Stop requested for SID: {sid}"),
                 Ok(false) => println!("Daemon is not running for SID: {sid}"),
                 Err(error) => {
                     eprintln!("{error}");
                     std::process::exit(1);
                 }
-            },
-            Command::Status => match runtime::status_daemon(&sid) {
+            }
+        }
+        Command::Status(args) => {
+            let sid = resolve_control_sid(args.sid.as_deref());
+            let sid = match sid {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+            };
+            match runtime::status_daemon(&sid) {
                 Ok(runtime::DaemonStatus::Running { pid }) => {
                     println!("Daemon is running for SID: {sid} (pid: {pid})");
                 }
@@ -118,43 +149,24 @@ fn main() {
                     eprintln!("{error}");
                     std::process::exit(1);
                 }
-            },
-            _ => {}
+            }
         }
-        return;
-    }
+        Command::Start(args) => {
+            let input = config_input_from_args(&args.config);
+            let config = load_config(&input, ConfigMode::RequireSyncConfig);
+            let config = match config {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    eprintln!("Missing required configuration for start command");
+                    std::process::exit(2);
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+            };
 
-    let mode = match cli.command {
-        Command::Stop | Command::Status => ConfigMode::AllowMissing,
-        Command::Start | Command::Sync => ConfigMode::RequireSyncConfig,
-    };
-    let input = ConfigInput {
-        sid: cli.sid.as_deref(),
-        sid_token: cli.sid_token.as_deref(),
-        participant_id: cli.participant_id.as_deref(),
-        http_listen_addr: cli.http_listen_addr.as_deref(),
-        udp_announce_addr: cli.udp_announce_addr.as_deref(),
-        bootstrap_peers: cli.bootstrap_peers.as_deref(),
-        sync_interval_secs: cli.sync_interval_secs,
-        public_key_path: cli.public_key_path.as_deref(),
-        authorized_keys_path: cli.authorized_keys_path.as_deref(),
-        dry_run: cli.dry_run,
-        config_path: cli.config_path.as_deref(),
-    };
-    let config = load_config(&input, mode);
-
-    let config = match config {
-        Ok(value) => value,
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(2);
-        }
-    };
-
-    match cli.command {
-        Command::Start => {
-            let config = config.expect("required configuration is missing");
-            if !cli.foreground && std::env::var("SSH_KEY_SYNC_INTERNAL_FOREGROUND").is_err() {
+            if !args.foreground && std::env::var("SSH_KEY_SYNC_INTERNAL_FOREGROUND").is_err() {
                 match runtime::status_daemon(&config.sid) {
                     Ok(runtime::DaemonStatus::Running { pid }) => {
                         println!(
@@ -190,9 +202,20 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Command::Stop | Command::Status => unreachable!("handled before config load"),
-        Command::Sync => {
-            let config = config.expect("required configuration is missing");
+        Command::Sync(args) => {
+            let input = config_input_from_args(&args.config);
+            let config = load_config(&input, ConfigMode::RequireSyncConfig);
+            let config = match config {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    eprintln!("Missing required configuration for sync command");
+                    std::process::exit(2);
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(2);
+                }
+            };
             if let Err(error) = runtime::run_single_sync(&config) {
                 eprintln!("{error}");
                 std::process::exit(1);
@@ -201,11 +224,40 @@ fn main() {
     }
 }
 
-fn resolve_sid(cli: &Cli) -> Option<String> {
-    cli.sid
-        .as_ref()
-        .map(ToOwned::to_owned)
-        .or_else(|| std::env::var("SSH_KEY_SYNC_SID").ok())
+fn config_input_from_args(args: &SyncConfigArgs) -> ConfigInput<'_> {
+    ConfigInput {
+        sid: args.sid.as_deref(),
+        sid_token: args.sid_token.as_deref(),
+        participant_id: args.participant_id.as_deref(),
+        http_listen_addr: args.http_listen_addr.as_deref(),
+        udp_announce_addr: args.udp_announce_addr.as_deref(),
+        bootstrap_peers: args.bootstrap_peers.as_deref(),
+        sync_interval_secs: args.sync_interval_secs,
+        public_key_path: args.public_key_path.as_deref(),
+        authorized_keys_path: args.authorized_keys_path.as_deref(),
+        dry_run: args.dry_run,
+        config_path: args.config_path.as_deref(),
+    }
+}
+
+fn resolve_control_sid(explicit_sid: Option<&str>) -> Result<String, String> {
+    if let Some(sid) = explicit_sid {
+        let trimmed = sid.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_owned());
+        }
+    }
+    if let Ok(sid) = std::env::var("SSH_KEY_SYNC_SID") {
+        let trimmed = sid.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_owned());
+        }
+    }
+    match runtime::resolve_current_sid() {
+        Ok(Some(sid)) => Ok(sid),
+        Ok(None) => Err("Missing SID: use --sid or start daemon first".to_owned()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn spawn_background_start(sid: &str) -> Result<(), String> {
