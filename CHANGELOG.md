@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.16] - 2026-06-22
+
+### Added
+- Added `ISSUE.md` to repository tracking as active weaknesses remediation source.
+
+### Changed
+- Updated `ISSUE.md` by moving completed item (daemon control artifacts migration from `/tmp`)
+  to done section and keeping only remaining work in active list.
+- Updated RFC-0002 phase progress marks for completed and pending phase-1 items.
+
 ## [0.1.15] - 2026-06-22
 
 ### Changed
