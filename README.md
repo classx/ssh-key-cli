@@ -12,10 +12,10 @@ Required:
 Commands:
 
 ```bash
-ssh-key-sync --sid group-a --sid-token secret-token start
-ssh-key-sync --sid group-a --sid-token secret-token sync
-ssh-key-sync --sid group-a status
-ssh-key-sync --sid group-a stop
+ssh-key-sync start --sid group-a --sid-token secret-token
+ssh-key-sync sync --sid group-a --sid-token secret-token
+ssh-key-sync status
+ssh-key-sync stop
 ```
 
 ## Configuration

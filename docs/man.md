@@ -1,4 +1,4 @@
-% SSH-KEY-SYNC(1) ssh-key-sync 0.1.13
+% SSH-KEY-SYNC(1) ssh-key-sync 0.1.14
 % ssh-key-sync maintainers
 % June 2026
 
@@ -8,7 +8,7 @@ ssh-key-sync - synchronize SSH public keys across trusted hosts
 
 # SYNOPSIS
 
-**ssh-key-sync** [*OPTIONS*] <**start**|**stop**|**status**|**sync**>
+**ssh-key-sync** <**start**|**stop**|**status**|**sync**> [*OPTIONS*]
 
 # DESCRIPTION
 
@@ -32,10 +32,14 @@ The tool updates only the managed block in `authorized_keys`:
   (fallback: `~/.local/run/ssh-key-sync/<sid>/daemon.log`).
 
 **stop**
-: Stop background daemon for the given `SID`.
+: Stop background daemon for current `SID`.
+  If `--sid` is omitted, the tool resolves `SID` from:
+  `SSH_KEY_SYNC_SID` → current runtime marker.
 
 **status**
-: Show daemon status for the given `SID`.
+: Show daemon status and current `SID`.
+  If `--sid` is omitted, the tool resolves `SID` from:
+  `SSH_KEY_SYNC_SID` → current runtime marker.
 
 **sync**
 : Run a single synchronization cycle and exit.
@@ -47,9 +51,7 @@ For `start` and `sync`:
 - `--sid` (or `SSH_KEY_SYNC_SID`)
 - `--sid-token` (or `SSH_KEY_SYNC_SID_TOKEN`)
 
-For `stop` and `status`:
-
-- `--sid` (or `SSH_KEY_SYNC_SID`)
+For `stop` and `status`: `--sid` is optional.
 
 # OPTIONS
 
@@ -114,20 +116,20 @@ If `XDG_RUNTIME_DIR` is not set, the same files are stored under:
 Start daemon in background:
 
 ```
-ssh-key-sync --sid group-a --sid-token token-a start
+ssh-key-sync start --sid group-a --sid-token token-a
 ```
 
 Check status and stop:
 
 ```
-ssh-key-sync --sid group-a status
-ssh-key-sync --sid group-a stop
+ssh-key-sync status
+ssh-key-sync stop
 ```
 
 Run one-shot sync:
 
 ```
-ssh-key-sync --sid group-a --sid-token token-a sync
+ssh-key-sync sync --sid group-a --sid-token token-a
 ```
 
 # EXIT STATUS

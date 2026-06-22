@@ -24,6 +24,7 @@ const CONTROL_ROOT_DIR: &str = "ssh-key-sync";
 const PID_FILE_NAME: &str = "daemon.pid";
 const STOP_FILE_NAME: &str = "daemon.stop";
 const LOG_FILE_NAME: &str = "daemon.log";
+const CURRENT_SID_FILE_NAME: &str = "current_sid";
 
 #[derive(Debug)]
 pub enum RuntimeError {
@@ -140,6 +141,7 @@ pub fn run_daemon(config: &AppConfig) -> Result<(), RuntimeError> {
             .map_err(|_| RuntimeError::ControlFile(path_display(&stop_path)))?;
     }
     write_control_file(&pid_path, &std::process::id().to_string())?;
+    set_current_sid(&config.sid)?;
 
     println!(
         "Daemon is running. HTTP: {}, UDP: {}, participant: {}",
@@ -795,16 +797,68 @@ pub fn daemon_log_file_path(sid: &str) -> Result<String, RuntimeError> {
     Ok(path_display(&log_file_path(sid)?))
 }
 
-fn control_runtime_dir_with_env(
-    sid: &str,
+pub fn resolve_current_sid() -> Result<Option<String>, RuntimeError> {
+    let marker_path = current_sid_marker_path()?;
+    if marker_path.exists() {
+        let value = fs::read_to_string(&marker_path)
+            .map_err(|_| RuntimeError::ControlFile(path_display(&marker_path)))?;
+        let sid = value.trim();
+        if !sid.is_empty() {
+            return Ok(Some(sid.to_owned()));
+        }
+    }
+    discover_sid_from_pid_files()
+}
+
+fn set_current_sid(sid: &str) -> Result<(), RuntimeError> {
+    ensure_control_runtime_root()?;
+    let marker_path = current_sid_marker_path()?;
+    write_control_file(&marker_path, sid)
+}
+
+fn current_sid_marker_path() -> Result<PathBuf, RuntimeError> {
+    Ok(control_runtime_root_path()?.join(CURRENT_SID_FILE_NAME))
+}
+
+fn discover_sid_from_pid_files() -> Result<Option<String>, RuntimeError> {
+    let root = control_runtime_root_path()?;
+    if !root.exists() {
+        return Ok(None);
+    }
+
+    let mut found_sid: Option<String> = None;
+    let entries =
+        fs::read_dir(&root).map_err(|_| RuntimeError::ControlFile(path_display(&root)))?;
+    for entry in entries {
+        let entry = entry.map_err(|_| RuntimeError::ControlFile(path_display(&root)))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let pid_path = path.join(PID_FILE_NAME);
+        if !pid_path.exists() {
+            continue;
+        }
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        let sid = name.to_string_lossy().to_string();
+        if found_sid.is_some() {
+            return Ok(None);
+        }
+        found_sid = Some(sid);
+    }
+    Ok(found_sid)
+}
+
+fn control_runtime_root_with_env(
     xdg_runtime_dir: Option<&str>,
     home: Option<&str>,
 ) -> Result<PathBuf, RuntimeError> {
-    let sid_dir = sanitize_for_file(sid);
     if let Some(path) = xdg_runtime_dir
         && !path.trim().is_empty()
     {
-        return Ok(PathBuf::from(path).join(CONTROL_ROOT_DIR).join(sid_dir));
+        return Ok(PathBuf::from(path).join(CONTROL_ROOT_DIR));
     }
     if let Some(path) = home
         && !path.trim().is_empty()
@@ -812,24 +866,39 @@ fn control_runtime_dir_with_env(
         return Ok(PathBuf::from(path)
             .join(".local")
             .join("run")
-            .join(CONTROL_ROOT_DIR)
-            .join(sid_dir));
+            .join(CONTROL_ROOT_DIR));
     }
     Err(RuntimeError::MissingHomeDir)
 }
 
-fn control_runtime_dir_path_for_sid(sid: &str) -> Result<PathBuf, RuntimeError> {
+#[cfg(test)]
+fn control_runtime_dir_with_env(
+    sid: &str,
+    xdg_runtime_dir: Option<&str>,
+    home: Option<&str>,
+) -> Result<PathBuf, RuntimeError> {
+    Ok(control_runtime_root_with_env(xdg_runtime_dir, home)?.join(sanitize_for_file(sid)))
+}
+
+fn control_runtime_root_path() -> Result<PathBuf, RuntimeError> {
     let xdg_runtime_dir = std::env::var("XDG_RUNTIME_DIR").ok();
     let home = std::env::var("HOME").ok();
-    control_runtime_dir_with_env(sid, xdg_runtime_dir.as_deref(), home.as_deref())
+    control_runtime_root_with_env(xdg_runtime_dir.as_deref(), home.as_deref())
+}
+
+fn control_runtime_dir_path_for_sid(sid: &str) -> Result<PathBuf, RuntimeError> {
+    Ok(control_runtime_root_path()?.join(sanitize_for_file(sid)))
+}
+
+fn ensure_control_runtime_root() -> Result<PathBuf, RuntimeError> {
+    let root = control_runtime_root_path()?;
+    ensure_private_dir(&root)?;
+    Ok(root)
 }
 
 fn ensure_control_runtime_dir_for_sid(sid: &str) -> Result<PathBuf, RuntimeError> {
     let sid_dir = control_runtime_dir_path_for_sid(sid)?;
-    let base_dir = sid_dir
-        .parent()
-        .ok_or_else(|| RuntimeError::RuntimeDirectory(path_display(&sid_dir)))?;
-    ensure_private_dir(base_dir)?;
+    ensure_control_runtime_root()?;
     ensure_private_dir(&sid_dir)?;
     Ok(sid_dir)
 }
@@ -920,8 +989,8 @@ fn process_exists(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        control_runtime_dir_with_env, ensure_private_dir, open_control_file_append,
-        write_control_file,
+        control_runtime_dir_with_env, control_runtime_root_with_env, ensure_private_dir,
+        open_control_file_append, write_control_file,
     };
     use std::fs;
     #[cfg(unix)]
@@ -944,6 +1013,13 @@ mod tests {
             dir,
             PathBuf::from("/home/a/.local/run/ssh-key-sync/group-a")
         );
+    }
+
+    #[test]
+    fn runtime_root_uses_xdg_when_present() {
+        let root = control_runtime_root_with_env(Some("/run/user/1000"), Some("/home/a"))
+            .expect("runtime root should resolve");
+        assert_eq!(root, PathBuf::from("/run/user/1000/ssh-key-sync"));
     }
 
     #[test]
